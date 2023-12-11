@@ -202,12 +202,12 @@ class PositionKalmanFilter(Node):
                         denumerator += np.power(pos_k - tag_pos_ik, 2)
                     denumerator = np.sqrt(denumerator)
                     H_i = np.append(H_i, numerator/denumerator)
-                H = np.append(H, H_i, axis=1)
+                H = np.append(H, H_i)
             return np.reshape(H, (-1,3))
 
         H = get_jacobian_H(ranges_msg=ranges_msg)
         
-        R = np.power(self.range_stddev, 2) * np.eye((num_measurements, num_measurements))
+        R = np.power(self.range_stddev, 2) * np.eye(num_measurements)
         S = H @ self.P @ H.transpose() + R
 
         K = self.P @ H.transpose() @ np.linalg.inv(S)
