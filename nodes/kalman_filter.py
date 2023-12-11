@@ -63,6 +63,8 @@ class PositionKalmanFilter(Node):
         # dimnesion: num measurements x num measurements
         # attention, this size is varying! -> Depends on detected Tags
 
+        self.range_stddev = 0.0005 # [m] -> 0.5cm used for R TODO Parameter
+
         self.update_tag_poses()
 
         # --------------------------------
@@ -89,6 +91,7 @@ class PositionKalmanFilter(Node):
         # --------------------------------
         self.process_update_timer = self.create_timer(
             1.0 / 50, self.on_prediction_step_timer)
+
 
     def init_params(self) -> None:
         self.declare_parameters(
@@ -173,16 +176,29 @@ class PositionKalmanFilter(Node):
         # if no tags are detected, stop here
         if not num_measurements:
             return
+        
+        def get_h (measurement: RangeMeasurement):
+            for pos, tag_pos in zip(self.state[0:3, 0], self.tag_poses[measurement.id]):
+                h = np.power(pos - tag_pos, 2)
+            return np.sqrt(h)
+        
+        measurement: RangeMeasurement
+        y = np.array([])
+        for measurement in ranges_msg.measurements:
+            z_k = measurement.range
+            h = get_h(measurement=measurement)
+            y = np.append(y, z_k-h)
+        y.reshape((num_measurements, 1))
 
         def get_jacobian_H (ranges_msg: RangeMeasurementArray):
             H = np.array([[], [], []])
             measurement_j: RangeMeasurement
             for index, measurement_j in enumerate(ranges_msg.measurements):
                 H_i = np.array([])
-                for pos_j, tag_pos_ij in zip(self.state[0:3], self.tag_poses[measurement_j.id]):
+                for pos_j, tag_pos_ij in zip(self.state[0:3, 0], self.tag_poses[measurement_j.id]):
                     numerator = pos_j - tag_pos_ij
                     denumerator = 0.0
-                    for pos_k, tag_pos_ik in zip(self.state[0:3], self.tag_poses[measurement_j.id]):
+                    for pos_k, tag_pos_ik in zip(self.state[0:3, 0], self.tag_poses[measurement_j.id]):
                         denumerator += np.power(pos_k - tag_pos_ik, 2)
                     denumerator = np.sqrt(denumerator)
                     H_i = np.append(H_i, numerator/denumerator)
@@ -191,6 +207,10 @@ class PositionKalmanFilter(Node):
 
         H = get_jacobian_H(ranges_msg=ranges_msg)
         
+        R = np.power(self.range_stddev, 2) * np.eye((num_measurements, num_measurements))
+        S = H @ self.P @ H.transpose() + R
+
+        K = self.P @ H.transpose() @ np.linalg.inv(S)
 
         # before the measurement update, let's do a process update
         now = self.get_clock().now()
@@ -228,6 +248,7 @@ class PositionKalmanFilter(Node):
     def measurement_update(self):
         vehicle_position = np.copy(self.state[0:3, 0])
         # TODO
+
         pass
 
 
