@@ -1,14 +1,10 @@
 # SEMS-23-Depth_Control
 
 ## Requirements
-The Custom Messages Package is required:
-```
-mkdir ~/fav/ros2/src/custom_msgs
-```
+The Custom Messages Package is required as a Node:
 
 ```
-cd ~/fav/ros2/src \
-&& git clone https://github.com/niko1302/SEMS-23-Custom_Messages.git 
+https://github.com/niko1302/SEMS-23-Custom_Messages.git 
 ```
 
 ## Launch the Node
