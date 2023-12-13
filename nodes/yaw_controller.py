@@ -25,14 +25,16 @@ class YawController(Node):
             topic='vision_pose_cov',
             callback=self.on_vision_pose,
             qos_profile=qos)
-        self.setpoint_sub = self.create_subscription(Float64Stamped,
-                                                     topic='~/setpoint',
-                                                     callback=self.on_setpoint,
-                                                     qos_profile=qos)
+        self.setpoint_sub = self.create_subscription(
+            msg_type=Float64Stamped,
+            topic='~/setpoint',
+            callback=self.on_setpoint,
+            qos_profile=qos)
 
-        self.torque_pub = self.create_publisher(msg_type=ActuatorSetpoint,
-                                                topic='torque_setpoint',
-                                                qos_profile=1)
+        self.torque_pub = self.create_publisher(
+            msg_type=ActuatorSetpoint,
+            topic='torque_setpoint',
+            qos_profile=1)
 
     def wrap_pi(self, value: float):
         """Normalize the angle to the range [-pi; pi]."""

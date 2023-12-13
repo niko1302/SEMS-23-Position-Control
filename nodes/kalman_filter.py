@@ -43,7 +43,7 @@ class PositionKalmanFilter(Node):
         sigma_initial_vel = 0.5     # [m/s] foor P0
 
         # ---- Dimensions ----
-        self.num_dimensions = 3     # (x1|x2|x3)
+        self.num_dimensions = 3     # (x1|x2|x3) or (x|y|z)
         self.num_derivations = 2    # pos, vel
         self.num_states = self.num_dimensions * self.num_derivations    # total states
 
@@ -52,7 +52,6 @@ class PositionKalmanFilter(Node):
         vel0 = [+0.0, +0.0, +0.1]
         x0 = np.array([pos0, vel0])
         self.x = x0.reshape((self.num_states, 1))
-        self.get_logger().info(f'x = {self.x}')
         
         # ---- standart deviation P ----
         self.P = np.eye(self.num_states)
@@ -87,8 +86,8 @@ class PositionKalmanFilter(Node):
             topic='vision_pose_cov',
             callback=self.on_vision_pose,
             qos_profile=qos)
-        
-        self.covariance = self.create_publisher(
+
+        self.covariance_pub = self.create_publisher(
             msg_type=CovarianceDetP,
             topic='covaricance',
             qos_profile=1)
@@ -265,7 +264,7 @@ class PositionKalmanFilter(Node):
         y = y.reshape((num_measurements, 1))
 
         # -- Get Jacobi Matrix H --
-        H = self._get_jacobian_H(ranges_msg=ranges_msg)
+        H = self._get_ranges_jacobian_H(ranges_msg=ranges_msg)
 
         # -- Get Kalman gain matrix K --
         R = np.power(self.sigma_measurement, 2) * np.eye(num_measurements)
@@ -274,9 +273,9 @@ class PositionKalmanFilter(Node):
 
         # -- debug logger --
         if self.DEBUG_LOGGER_KALMAN_GAIN_CALCULATION:
-            self.get_logger().info(f'MEASUREMENT: y =\n{y}')
-            self.get_logger().info(f'MEASUREMENT: H =\n{H}')
-            self.get_logger().info(f'MEASUREMENT: K =\n{K}')
+            self.get_logger().info(f'RANGES: y =\n{y}')
+            self.get_logger().info(f'RANGES: H =\n{H}')
+            self.get_logger().info(f'RANGES: K =\n{K}')
 
         # -- Predict one last time before our measurement update --
         now = self.get_clock().now()
@@ -290,8 +289,8 @@ class PositionKalmanFilter(Node):
 
         # -- debug logger --
         if self.DEBUG_LOGGER_STATE_AND_COVARIANCE:
-            self.get_logger().info(f'MEASUREMENT: x = {self.x.flatten()}')
-            self.get_logger().info(f'MEASUREMENT: P = {np.linalg.det(self.P)}')
+            self.get_logger().info(f'RANGES: x = {self.x.flatten()}')
+            self.get_logger().info(f'RANGES: P = {np.linalg.det(self.P)}')
 
 
     def prediction(self, dt: float) -> None:
@@ -312,7 +311,7 @@ class PositionKalmanFilter(Node):
         return A
 
 
-    def _get_jacobian_H (self, ranges_msg: RangeMeasurementArray) -> np.ndarray:
+    def _get_ranges_jacobian_H (self, ranges_msg: RangeMeasurementArray) -> np.ndarray:
         H = np.array([])
         measurement: RangeMeasurement
         for measurement in ranges_msg.measurements:
@@ -337,7 +336,7 @@ class PositionKalmanFilter(Node):
         msg.header.stamp = now.to_msg()
         msg.predict_or_measure = predict_or_measure
         msg.determinant_cov = np.linalg.det(self.P)
-        self.covariance.publish(msg)
+        self.covariance_pub.publish(msg)
 
 
     def publish_pose_msg(self, state: np.ndarray, now: rclpy.time.Time) -> None:
