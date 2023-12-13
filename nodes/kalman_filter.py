@@ -9,13 +9,15 @@ from rclpy.qos import QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 from tf_transformations import euler_from_quaternion
 
+from custom_msgs.msg import CovarianceDetP
+
 
 class PositionKalmanFilter(Node):
 
     def __init__(self):
-        # ---------------------
-        # -- Initializadtion --
-        # ---------------------
+        # --------------------
+        # -- Initialisation --
+        # --------------------
         super().__init__(node_name='position_kalman_filter')
 
         qos = QoSProfile(reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -24,48 +26,48 @@ class PositionKalmanFilter(Node):
 
         self.init_params()
 
+        self.update_tag_poses()
+
         # ---------------------
         # -- class variables --
         # ---------------------
+        self.DEBUG_LOGGER_STATE_AND_COVARIANCE = False
+        self.DEBUG_LOGGER_KALMAN_GAIN_CALCULATION = False
+        
+        # ---- Sigmas ----
+        # self.sigma_prediction_pos --> Parameter
+        # self.sigma_prediction_vel --> Parameter
+        # self.sigma_measurement --> Parameter
+
+        sigma_initial_pos = 0.05   # [m] for P0
+        sigma_initial_vel = 0.5     # [m/s] foor P0
+
+        # ---- Dimensions ----
+        self.num_dimensions = 3     # (x1|x2|x3)
+        self.num_derivations = 2    # pos, vel
+        self.num_states = self.num_dimensions * self.num_derivations    # total states
+
+        # ---- State x ----
+        pos0 = [+1.3, +1.0, -0.5]
+        vel0 = [+0.0, +0.0, +0.1]
+        x0 = np.array([pos0, vel0])
+        self.x = x0.reshape((self.num_states, 1))
+        self.get_logger().info(f'x = {self.x}')
+        
+        # ---- standart deviation P ----
+        self.P = np.eye(self.num_states)
+        self.P[:, 0:3] *= np.power(sigma_initial_pos, 2)
+        self.P[:, 3:6] *= np.power(sigma_initial_vel, 2)
+
+        # ---- standart deviation gain per prediction Q ----
+        self.Q = np.eye(self.num_states)
+        self.Q[:, 0:3] *= np.power(self.sigma_prediction_pos, 2)
+        self.Q[:, 3:6] *= np.power(self.sigma_prediction_vel, 2)
+        
+        # -----------------------------------------------------
         self.time_last_prediction = self.get_clock().now()
 
-        # TODO Assuming state consists of position x,y,z -> Feel free to add
-        # more!
-        self.num_states = 3
-
-        # initial state
-        self.x0 = np.zeros((self.num_states, 1))
-
-        # state, this will be updated in Kalman filter algorithm
-        self.state = np.copy(self.x0)
-
-        # initial state covariance - how sure are we about the state?
-        # TODO initial state covariance is tuning knob
-        # dimension: num states x num states
-        # matrix needs to be positive definite and symmetric
-        self.P0 = 0.1 * np.eye(self.num_states)
-
-        # state covariance, this will be updated in Kalman filter algorithm
-        self.P = self.P0
-
-        # process noise covariance - how much noise do we add at each
-        # prediction step?
-        # TODO tuning knob
-        # dimension: num states x num states
-        # matrix needs to be positive definite and symmetric
-        self.process_noise_position_stddev = 0.1
-        self.Q = (self.range_noise_stddev**2) * np.eye(self.num_states)
-
-        # measurement noise covariance - how much noise does the measurement
-        # contain?
-        # TODO tuning knob
-        self.range_noise_stddev = 0.1
-        # dimnesion: num measurements x num measurements
-        # attention, this size is varying! -> Depends on detected Tags
-
-        self.range_stddev = 0.0005 # [m] -> 0.5cm used for R TODO Parameter
-
-        self.update_tag_poses()
+        self.add_on_set_parameters_callback(self.on_params_changed)
 
         # --------------------------------
         # -- Publsihers and Subscribers --
@@ -86,6 +88,11 @@ class PositionKalmanFilter(Node):
             callback=self.on_vision_pose,
             qos_profile=qos)
         
+        self.covariance = self.create_publisher(
+            msg_type=CovarianceDetP,
+            topic='covaricance',
+            qos_profile=1)
+        
         # --------------------------------
         # -- timer: 50 times per second --
         # --------------------------------
@@ -93,25 +100,48 @@ class PositionKalmanFilter(Node):
             1.0 / 50, self.on_prediction_step_timer)
 
 
+    # ----------------------------------------------
+    # ---------- Initializadtion & Update ----------
     def init_params(self) -> None:
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('range_noise_stddev', rclpy.Parameter.Type.DOUBLE),
-                ('process_noise_position_stddev', rclpy.Parameter.Type.DOUBLE),
+                ('sigma_prediction_pos', rclpy.Parameter.Type.DOUBLE),
+                ('sigma_prediction_vel', rclpy.Parameter.Type.DOUBLE),
+                ('sigma_measurement', rclpy.Parameter.Type.DOUBLE),
+                ('offset_to_tag0_x1', rclpy.Parameter.Type.DOUBLE),
+                ('offset_to_tag0_x3', rclpy.Parameter.Type.DOUBLE),
                 ('tag_0_pos.x1', rclpy.Parameter.Type.DOUBLE),
                 ('tag_0_pos.x2', rclpy.Parameter.Type.DOUBLE),
                 ('tag_0_pos.x3', rclpy.Parameter.Type.DOUBLE),
             ]
         )
 
-        param = self.get_parameter('range_noise_stddev')
-        self.get_logger().info(f'{param.name}={param.value}')
-        self.range_noise_stddev = param.value
+        # ----------------
+        # ---- Sigmas ----
 
-        param = self.get_parameter('process_noise_position_stddev')
+        # -- Sigma gain for the prediction --
+        param = self.get_parameter('sigma_prediction_pos')
         self.get_logger().info(f'{param.name}={param.value}')
-        self.process_noise_position_stddev = param.value
+        self.sigma_prediction_pos = param.value
+
+        param = self.get_parameter('sigma_prediction_vel')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.sigma_prediction_vel = param.value
+
+        # -- Sigma gain for the measurement --
+        param = self.get_parameter('sigma_measurement')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.sigma_measurement = param.value
+
+        # -- Tag offset --
+        param = self.get_parameter('offset_to_tag0_x1')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.offset_to_tag0_x1 = param.value
+
+        param = self.get_parameter('offset_to_tag0_x3')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.offset_to_tag0_x3 = param.value
 
         # ------------------------
         # ---- Tag 0 Position ----
@@ -133,8 +163,8 @@ class PositionKalmanFilter(Node):
     def update_tag_poses(self) -> None:
         self.tag_poses = np.array([self.tag_0_pos, self.tag_0_pos,
                                    self.tag_0_pos, self.tag_0_pos])       
-        tag_offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.6, 0.0],
-                                [0.0, 0.0, -0.4], [0.0, 0.6, -0.4]])
+        tag_offsets = np.array([[0.0, 0.0, 0.0], [self.offset_to_tag0_x1, 0.0, 0.0],
+                                [0.0, 0.0, self.offset_to_tag0_x3], [self.offset_to_tag0_x1, 0.0, self.offset_to_tag0_x3]])
         
         for count, (pos, offset) in enumerate(zip(self.tag_poses, tag_offsets)):
             self.tag_poses[count] = pos + offset
@@ -149,12 +179,23 @@ class PositionKalmanFilter(Node):
         param: rclpy.Parameter
         for param in params:
             self.get_logger().info(f'Try to set [{param.name}] = {param.value}')
-            if param.name == 'range_noise_stddev':
-                self.range_noise_stddev = param.value
-            elif param.name == 'process_noise_position_stddev':
-                self.process_noise_position_stddev = param.value
-                self.Q = (self.process_noise_position_stddev**2) * np.eye(
-                    self.num_states)
+            if   param.name == 'sigma_prediction_pos':
+                self.sigma_prediction_pos = param.value
+                self.Q[:, 0:3] *= np.power(self.sigma_prediction_pos, 2)
+            elif param.name == 'sigma_prediction_vel':
+                self.sigma_prediction_vel = param.value
+                self.Q[:, 3:6] *= np.power(self.sigma_prediction_vel, 2)
+            
+            elif param.name == 'sigma_measurement':
+                self.sigma_measurement = param.value
+
+            elif param.name == 'offset_to_tag0_x1':
+                self.offset_to_tag0_x1 = param.value
+                self.update_tag_poses()
+            elif param.name == 'offset_to_tag0_x3':
+                self.offset_to_tag0_x3 = param.value
+                self.update_tag_poses()
+            
             elif param.name == 'tag_0_pos.x1':
                 self.tag_0_pos[0] = param.value
                 self.update_tag_poses()
@@ -168,7 +209,8 @@ class PositionKalmanFilter(Node):
                 continue
         return SetParametersResult(successful=True, reason='Parameter set')
 
-
+    # -------------------------------
+    # ---------- Do Things ----------
     def on_ranges(self, ranges_msg: RangeMeasurementArray) -> None:
         # how many tags are detected?
         num_measurements = len(ranges_msg._measurements)
@@ -176,51 +218,13 @@ class PositionKalmanFilter(Node):
         # if no tags are detected, stop here
         if not num_measurements:
             return
+
+        self.measurement_update(ranges_msg=ranges_msg, num_measurements=num_measurements)
         
-        def get_h (measurement: RangeMeasurement):
-            for pos, tag_pos in zip(self.state[0:3, 0], self.tag_poses[measurement.id]):
-                h = np.power(pos - tag_pos, 2)
-            return np.sqrt(h)
-        
-        measurement: RangeMeasurement
-        y = np.array([])
-        for measurement in ranges_msg.measurements:
-            z_k = measurement.range
-            h = get_h(measurement=measurement)
-            y = np.append(y, z_k-h)
-        y.reshape((num_measurements, 1))
-
-        def get_jacobian_H (ranges_msg: RangeMeasurementArray):
-            H = np.array([[], [], []])
-            measurement_j: RangeMeasurement
-            for index, measurement_j in enumerate(ranges_msg.measurements):
-                H_i = np.array([])
-                for pos_j, tag_pos_ij in zip(self.state[0:3, 0], self.tag_poses[measurement_j.id]):
-                    numerator = pos_j - tag_pos_ij
-                    denumerator = 0.0
-                    for pos_k, tag_pos_ik in zip(self.state[0:3, 0], self.tag_poses[measurement_j.id]):
-                        denumerator += np.power(pos_k - tag_pos_ik, 2)
-                    denumerator = np.sqrt(denumerator)
-                    H_i = np.append(H_i, numerator/denumerator)
-                H = np.append(H, H_i)
-            return np.reshape(H, (-1,3))
-
-        H = get_jacobian_H(ranges_msg=ranges_msg)
-        
-        R = np.power(self.range_stddev, 2) * np.eye(num_measurements)
-        S = H @ self.P @ H.transpose() + R
-
-        K = self.P @ H.transpose() @ np.linalg.inv(S)
-
-        # before the measurement update, let's do a process update
         now = self.get_clock().now()
-        dt = (now - self.time_last_prediction).nanoseconds * 1e-9
-        self.prediction(dt)
-        self.time_last_prediction = now
-
-        # TODO
-        # self.measurement_update(...)
-
+        self.publish_cov(predict_or_measure=0.0, now=now)
+        self.publish_pose_msg(state=np.copy(self.x), now=now)
+        
 
     def on_vision_pose(self, msg: PoseWithCovarianceStamped):
         # You might want to consider the vehicle's orientation
@@ -241,21 +245,99 @@ class PositionKalmanFilter(Node):
         self.prediction(dt)
         self.time_last_prediction = now
 
+        self.publish_cov(predict_or_measure=1.0, now=now)
+
         # publish the estimated pose with constant rate
-        self.publish_pose_msg(state=np.copy(self.state), now=now)
+        self.publish_pose_msg(state=np.copy(self.x), now=now)
 
+    # -----------------------------------
+    # ---------- Kalman Filter ----------
+    def measurement_update(self, ranges_msg: RangeMeasurementArray, num_measurements: int) -> None:
+        measurement: RangeMeasurement
 
-    def measurement_update(self):
-        vehicle_position = np.copy(self.state[0:3, 0])
-        # TODO
+        # -- Calculate measurement residual --
+        # -> the difference between our measurement and what the measurement should be (depends on where we think we are)
+        y = np.array([])
+        for measurement in ranges_msg.measurements:
+            z_k = measurement.range
+            hx = self._get_dist_between_vec(self.x[0:3, 0], self.tag_poses[measurement.id])
+            y = np.append(y, z_k - hx)
+        y = y.reshape((num_measurements, 1))
 
-        pass
+        # -- Get Jacobi Matrix H --
+        H = self._get_jacobian_H(ranges_msg=ranges_msg)
+
+        # -- Get Kalman gain matrix K --
+        R = np.power(self.sigma_measurement, 2) * np.eye(num_measurements)
+        S = H @ self.P @ H.transpose() + R
+        K = self.P @ H.transpose() @ np.linalg.inv(S)
+
+        # -- debug logger --
+        if self.DEBUG_LOGGER_KALMAN_GAIN_CALCULATION:
+            self.get_logger().info(f'MEASUREMENT: y =\n{y}')
+            self.get_logger().info(f'MEASUREMENT: H =\n{H}')
+            self.get_logger().info(f'MEASUREMENT: K =\n{K}')
+
+        # -- Predict one last time before our measurement update --
+        now = self.get_clock().now()
+        dt = (now - self.time_last_prediction).nanoseconds * 1e-9
+        self.prediction(dt)
+        self.time_last_prediction = now
+
+        # -- Update state an covariance --
+        self.x = self.x + (K @ y)
+        self.P = (np.eye(self.num_states) -  (K @ H)) @ self.P
+
+        # -- debug logger --
+        if self.DEBUG_LOGGER_STATE_AND_COVARIANCE:
+            self.get_logger().info(f'MEASUREMENT: x = {self.x.flatten()}')
+            self.get_logger().info(f'MEASUREMENT: P = {np.linalg.det(self.P)}')
 
 
     def prediction(self, dt: float) -> None:
-        A = np.eye(self.num_states)
-        self.state = A @ self.state
+        A = self._get_A(dt=dt)
+        self.x = A @ self.x
         self.P = A @ self.P @ A.transpose() + self.Q
+        
+        if self.DEBUG_LOGGER_STATE_AND_COVARIANCE:
+            self.get_logger().info(f'Prediction: x = {self.x.flatten()}')
+            self.get_logger().info(f'Prediction: P = {np.linalg.det(self.P)}')
+    
+    # -----------------------------------
+    # ---------- get functions ----------
+    def _get_A(self, dt:float) -> np.ndarray:
+        A = np.eye(self.num_states)
+        for m, n in zip(range(0,3), range(3,self.num_states)):
+            A[m, n] = dt
+        return A
+
+
+    def _get_jacobian_H (self, ranges_msg: RangeMeasurementArray) -> np.ndarray:
+        H = np.array([])
+        measurement: RangeMeasurement
+        for measurement in ranges_msg.measurements:
+            dist = self._get_dist_between_vec(self.x, self.tag_poses[measurement.id])
+            for x_j, p_j in zip(self.x[0:3, 0], self.tag_poses[measurement.id]):
+                H = np.append(H, [(x_j - p_j) / dist])
+            for i in range(3, self.num_states):
+                H = np.append(H, [0.0])
+        return H.reshape((-1, self.num_states))
+
+
+    def _get_dist_between_vec(self, posA: np.ndarray, posB: np.ndarray) -> float:
+        dist = 0.0
+        for a, b in zip(posA, posB):
+            dist += np.power(a-b, 2)
+        return max(np.sqrt(dist), 1e-8)
+
+    # ------------------------------------
+    # ---------- Publish values ----------
+    def publish_cov(self, predict_or_measure: float, now: rclpy.time.Time) -> None:
+        msg = CovarianceDetP()
+        msg.header.stamp = now.to_msg()
+        msg.predict_or_measure = predict_or_measure
+        msg.determinant_cov = np.linalg.det(self.P)
+        self.covariance.publish(msg)
 
 
     def publish_pose_msg(self, state: np.ndarray, now: rclpy.time.Time) -> None:
