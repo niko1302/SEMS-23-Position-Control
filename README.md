@@ -7,6 +7,11 @@ The Custom Messages Package is required as a Node:
 https://github.com/niko1302/SEMS-23-Custom_Messages.git 
 ```
 
+## Known issues
+
+### Kalman Filter
+Entries in the Jacobian Matrix H can be negative. Sometimes when starting this package before the gazebo enviroment the entries on the diagonal were negative. when caclulating the sqrt a error occurred. -> sort of fixed: sqrt is not computed anymore.
+
 ## Launch the Node
 
 To Start the Node Type:

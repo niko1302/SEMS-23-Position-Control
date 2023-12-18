@@ -1,0 +1,4 @@
+/**: # wildcard for the node name
+  ros__parameters:
+    setpoint_function: 'circle' # options are: rectangle, circle, diagonal,
+    duration: 10.0  # [s]

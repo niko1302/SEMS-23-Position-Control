@@ -1,11 +1,15 @@
 /**: # wildcard for the node name
   ros__parameters:
-    sigma_prediction_pos: 0.05    # [m]   for Q
-    sigma_prediction_vel: 0.1     # [m/s] for Q
-    sigma_measurement: 0.01       #       for R
+    sigma_prediction_pos: 0.01    # [m]   for Q  -> this sigma² gets added in 1 sec of prediction time
+    sigma_prediction_vel: 0.05    # [m/s] for Q  -> this sigma² gets added in 1 sec of prediction time
+    sigma_measurement: 0.01       # [m]   for R
     offset_to_tag0_x1: 0.6  # [m] Offset from Tag 0 to Tag 1 & 3 in x1 (x) direction
     offset_to_tag0_x3: -0.4 # [m] Offset from Tag 0 to tag 2 & 3 in x3 (z) direction
     tag_0_pos:
       x1: 0.7   # [m]
       x2: 3.8   # [m]
       x3: -0.5  # [m]
+    camera_offset:
+      x1: 0.0   # [m] real: 0.2
+      x2: 0.0   # [m] real: 0.0
+      x3: 0.0   # [m] real: 0.1

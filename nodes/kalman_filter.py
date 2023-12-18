@@ -39,7 +39,7 @@ class PositionKalmanFilter(Node):
         # self.sigma_prediction_vel --> Parameter
         # self.sigma_measurement --> Parameter
 
-        sigma_initial_pos = 0.05   # [m] for P0
+        sigma_initial_pos = 0.5   # [m] for P0
         sigma_initial_vel = 0.5     # [m/s] foor P0
 
         # ---- Dimensions ----
@@ -49,7 +49,7 @@ class PositionKalmanFilter(Node):
 
         # ---- State x ----
         pos0 = [+1.3, +1.0, -0.5]
-        vel0 = [+0.0, +0.0, +0.1]
+        vel0 = [+0.0, +0.0, +0.0]
         x0 = np.array([pos0, vel0])
         self.x = x0.reshape((self.num_states, 1))
         
@@ -57,11 +57,6 @@ class PositionKalmanFilter(Node):
         self.P = np.eye(self.num_states)
         self.P[:, 0:3] *= np.power(sigma_initial_pos, 2)
         self.P[:, 3:6] *= np.power(sigma_initial_vel, 2)
-
-        # ---- standart deviation gain per prediction Q ----
-        self.Q = np.eye(self.num_states)
-        self.Q[:, 0:3] *= np.power(self.sigma_prediction_pos, 2)
-        self.Q[:, 3:6] *= np.power(self.sigma_prediction_vel, 2)
         
         # -----------------------------------------------------
         self.time_last_prediction = self.get_clock().now()
@@ -69,13 +64,17 @@ class PositionKalmanFilter(Node):
         self.add_on_set_parameters_callback(self.on_params_changed)
 
         # --------------------------------
-        # -- Publsihers and Subscribers --
+        # -- Publishers and Subscribers --
         # --------------------------------
         self.position_pub = self.create_publisher(
             msg_type=PoseStamped,
             topic='position_estimate',
             qos_profile=1)
-        
+        self.position_and_cov_pub = self.create_publisher(
+            msg_type=PoseWithCovarianceStamped,
+            topic='pose_and_cov_estimate',
+            qos_profile=1)
+
         self.ranges_sub = self.create_subscription(
             msg_type=RangeMeasurementArray,
             topic='ranges',
@@ -87,6 +86,7 @@ class PositionKalmanFilter(Node):
             callback=self.on_vision_pose,
             qos_profile=qos)
 
+        # TODO alter the message so that it shows x +/- sigma
         self.covariance_pub = self.create_publisher(
             msg_type=CovarianceDetP,
             topic='covaricance',
@@ -113,6 +113,9 @@ class PositionKalmanFilter(Node):
                 ('tag_0_pos.x1', rclpy.Parameter.Type.DOUBLE),
                 ('tag_0_pos.x2', rclpy.Parameter.Type.DOUBLE),
                 ('tag_0_pos.x3', rclpy.Parameter.Type.DOUBLE),
+                ('camera_offset.x1', rclpy.Parameter.Type.DOUBLE),
+                ('camera_offset.x2', rclpy.Parameter.Type.DOUBLE),
+                ('camera_offset.x3', rclpy.Parameter.Type.DOUBLE),
             ]
         )
 
@@ -158,6 +161,22 @@ class PositionKalmanFilter(Node):
         self.get_logger().info(f'{param.name}={param.value}')
         self.tag_0_pos.append(param.value)
 
+        # -----------------------
+        # ---- Camera offset ----
+        self.camera_offset = []
+
+        param = self.get_parameter('camera_offset.x1')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.camera_offset.append(param.value)
+
+        param = self.get_parameter('camera_offset.x2')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.camera_offset.append(param.value)
+
+        param = self.get_parameter('camera_offset.x3')
+        self.get_logger().info(f'{param.name}={param.value}')
+        self.camera_offset.append(param.value)
+
 
     def update_tag_poses(self) -> None:
         self.tag_poses = np.array([self.tag_0_pos, self.tag_0_pos,
@@ -180,10 +199,8 @@ class PositionKalmanFilter(Node):
             self.get_logger().info(f'Try to set [{param.name}] = {param.value}')
             if   param.name == 'sigma_prediction_pos':
                 self.sigma_prediction_pos = param.value
-                self.Q[:, 0:3] *= np.power(self.sigma_prediction_pos, 2)
             elif param.name == 'sigma_prediction_vel':
                 self.sigma_prediction_vel = param.value
-                self.Q[:, 3:6] *= np.power(self.sigma_prediction_vel, 2)
             
             elif param.name == 'sigma_measurement':
                 self.sigma_measurement = param.value
@@ -204,6 +221,14 @@ class PositionKalmanFilter(Node):
             elif param.name == 'tag_0_pos.x3':
                 self.tag_0_pos[2] = param.value
                 self.update_tag_poses()
+
+            elif param.name == 'camera_offset.x1':
+                self.camera_offset[0] = param.value
+            elif param.name == 'camera_offset.x2':
+                self.camera_offset[1] = param.value
+            elif param.name == 'camera_offset.x3':
+                self.camera_offset[2] = param.value
+
             else:
                 continue
         return SetParametersResult(successful=True, reason='Parameter set')
@@ -223,6 +248,7 @@ class PositionKalmanFilter(Node):
         now = self.get_clock().now()
         self.publish_cov(predict_or_measure=0.0, now=now)
         self.publish_pose_msg(state=np.copy(self.x), now=now)
+        self.publish_pose_and_cov(x=np.copy(self.x), P=np.copy(self.P), now=now)
         
 
     def on_vision_pose(self, msg: PoseWithCovarianceStamped):
@@ -248,6 +274,7 @@ class PositionKalmanFilter(Node):
 
         # publish the estimated pose with constant rate
         self.publish_pose_msg(state=np.copy(self.x), now=now)
+        self.publish_pose_and_cov(x=np.copy(self.x), P=np.copy(self.P), now=now)
 
     # -----------------------------------
     # ---------- Kalman Filter ----------
@@ -291,24 +318,33 @@ class PositionKalmanFilter(Node):
         if self.DEBUG_LOGGER_STATE_AND_COVARIANCE:
             self.get_logger().info(f'RANGES: x = {self.x.flatten()}')
             self.get_logger().info(f'RANGES: P = {np.linalg.det(self.P)}')
+            self.get_logger().info(f'RANGES: Sigmas = {np.sqrt(self.P[0, 0])}, {np.sqrt(self.P[1, 1])}, {np.sqrt(self.P[2, 2])}')
 
 
     def prediction(self, dt: float) -> None:
         A = self._get_A(dt=dt)
         self.x = A @ self.x
-        self.P = A @ self.P @ A.transpose() + self.Q
+        self.P = A @ self.P @ A.transpose() + self._get_Q(dt=dt)
         
         if self.DEBUG_LOGGER_STATE_AND_COVARIANCE:
             self.get_logger().info(f'Prediction: x = {self.x.flatten()}')
             self.get_logger().info(f'Prediction: P = {np.linalg.det(self.P)}')
+            self.get_logger().info(f'Prediction: Sigmas = {np.sqrt(self.P[0, 0])}, {np.sqrt(self.P[1, 1])}, {np.sqrt(self.P[2, 2])}')
     
-    # -----------------------------------
-    # ---------- get functions ----------
+    # ----------------------------------
+    # ---------- Calculations ----------
     def _get_A(self, dt:float) -> np.ndarray:
         A = np.eye(self.num_states)
         for m, n in zip(range(0,3), range(3,self.num_states)):
             A[m, n] = dt
         return A
+
+
+    def _get_Q(self, dt: float) -> np.ndarray:
+        Q = np.eye(self.num_states)
+        Q[:, 0:3] *= np.power(self.sigma_prediction_pos * dt, 2)
+        Q[:, 3:6] *= np.power(self.sigma_prediction_vel * dt, 2)
+        return Q
 
 
     def _get_ranges_jacobian_H (self, ranges_msg: RangeMeasurementArray) -> np.ndarray:
@@ -344,11 +380,24 @@ class PositionKalmanFilter(Node):
 
         msg.header.stamp = now.to_msg()
         msg.header.frame_id = "map"
-        msg.pose.position.x = state[0, 0]
-        msg.pose.position.y = state[1, 0]
-        msg.pose.position.z = state[2, 0]
+        msg.pose.position.x = state[0, 0] + self.camera_offset[0]
+        msg.pose.position.y = state[1, 0] + self.camera_offset[1]
+        msg.pose.position.z = state[2, 0] + self.camera_offset[2]
 
         self.position_pub.publish(msg)
+
+    
+    def publish_pose_and_cov(self, x: np.ndarray, P: np.ndarray, now: rclpy.time.Time) -> None:
+        msg = PoseWithCovarianceStamped()
+        msg.header.stamp = now.to_msg()
+
+        msg.pose.pose.position.x = x[0, 0] + self.camera_offset[0]
+        msg.pose.pose.position.y = x[1, 0] + self.camera_offset[1]
+        msg.pose.pose.position.z = x[2, 0] + self.camera_offset[2]
+
+        msg.pose.covariance = P.flatten()
+
+        self.position_and_cov_pub.publish(msg=msg)
 
 
 def main():

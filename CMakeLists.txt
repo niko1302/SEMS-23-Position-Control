@@ -8,6 +8,8 @@ install(PROGRAMS
   nodes/kalman_filter.py
   nodes/ranges_debugger.py
   nodes/yaw_controller.py
+  nodes/position_controller.py
+  nodes/position_setpoint.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

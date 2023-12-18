@@ -36,6 +36,7 @@ class YawController(Node):
             topic='torque_setpoint',
             qos_profile=1)
 
+
     def wrap_pi(self, value: float):
         """Normalize the angle to the range [-pi; pi]."""
         if (-math.pi < value) and (value < math.pi):
@@ -44,8 +45,10 @@ class YawController(Node):
         num_wraps = math.floor((value + math.pi) / range)
         return value - range * num_wraps
 
+
     def on_setpoint(self, msg: Float64Stamped):
         self.setpoint = self.wrap_pi(msg.data)
+
 
     def on_vision_pose(self, msg: PoseWithCovarianceStamped):
         # get the vehicle orientation expressed as quaternion
@@ -58,12 +61,14 @@ class YawController(Node):
         timestamp = rclpy.time.Time.from_msg(msg.header.stamp)
         self.publish_control_output(control_output, timestamp)
 
+
     def compute_control_output(self, yaw):
         # very important: normalize the angle error!
         error = self.wrap_pi(self.setpoint - yaw)
 
         p_gain = 0.1  # turned out to be a good value
         return p_gain * error
+
 
     def publish_control_output(self, control_output: float,
                                timestamp: rclpy.time.Time):
